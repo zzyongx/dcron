@@ -158,11 +158,6 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   opt->name_.assign(buffer);
 
   opt->fifo_ = opt->libdir_ + "/" + opt->name_ + ".fifo";
-  if (mkfifo(opt->fifo_.c_str(), 0644) != 0 && errno != EEXIST) {
-    snprintf(errbuf, ERRBUF_MAX, "mkfifo error %s", opt->fifo_.c_str());
-    return 0;
-  }
-
   getenv("DCRON_ZKDUMP", &opt->zkdump_);
 
   return opt.release();

@@ -16,6 +16,12 @@ extern char **environ;
 static pthread_mutex_t PTHREAD_MUTEX = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  PTHREAD_COND  = PTHREAD_COND_INITIALIZER;
 
+inline void millisleep(int milli)
+{
+  struct timespec spec = { 0, milli * 1000 * 1000 };
+  nanosleep(&spec, 0);
+}
+
 /*
 static void log_callback(const char *message)
 {
@@ -89,11 +95,11 @@ bool ZkMgr::createWorkDir(char *errbuf)
 
 ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
 {
-  int bufferLen = 1024;
   char buffer[1024];
   struct Stat stat;
 
   do {
+    int bufferLen = 1024;
     int rc = zoo_get(zh_, workersNode_.c_str(), 0, buffer, &bufferLen, &stat);
     if (rc != ZOK) {
       snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
@@ -191,7 +197,7 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
   if (cnf->stick()) {
     mgr->status_ = mgr->competeMaster(true, errbuf);
   } else {
-    sleep(2);
+    millisleep(random() % 999999);
     mgr->status_ = mgr->competeMaster(true, errbuf);
   }
 
@@ -360,14 +366,14 @@ pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::strin
 
   pid_t pid = fork();
   if (pid == 0) {
-    close(fifoFd_);
-
-    int logFd;
     if (cnf_->captureStdio()) {
-      std::string iof = cnf_->logdir() + "/" + cnf_->name();
-      logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0666);
-      dup2(logFd, STDOUT_FILENO);
-      dup2(logFd, STDERR_FILENO);
+      std::string iof = cnf_->logdir() + "/" + cnf_->name() + ".stdout";
+      int logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
+      if (logFd != -1) dup2(logFd, STDOUT_FILENO);
+
+      iof = cnf_->logdir() + "/" + cnf_->name() + ".stderr";
+      logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
+      if (logFd != -1) dup2(logFd, STDERR_FILENO);
     }
 
     if (execve(argv[0], argv, buildEnv(cnf_, env)) == -1) {
@@ -384,6 +390,13 @@ pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::strin
   return pid;
 }
 
+inline int getExitCode(int status)
+{
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  else if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  else return status;
+}
+
 bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
 {
   pid_t npid = waitpid(pid, exitStatus, WNOHANG);
@@ -392,6 +405,8 @@ bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
     setResult(cnt, INTERNAL_ERROR_STATUS, "waitpid error");
     return true;
   } else if (npid == pid) {
+    *exitStatus = getExitCode(*exitStatus);
+
     if (*exitStatus == 0 || cnf_->retryStrategy() == ConfigOpt::RETRY_NOTHING ||
         cnf_->retryStrategy() == ConfigOpt::RETRY_ON_CRASH) {
       setStatus(*exitStatus);
@@ -429,18 +444,18 @@ void ZkMgr::rsyncFifoData()
   if (!env.empty()) setRemoteEnv(zh_, llapNode_.c_str(), &env);
 }
 
-inline void millisleep(int milli)
-{
-  struct timespec spec = { 0, milli * 1000 * 1000 };
-  nanosleep(&spec, 0);
-}
-
 int ZkMgr::exec(int argc, char *argv[])
 {
   std::map<std::string, std::string> env;
   if (!getRomoteEnv(zh_, llapNode_.c_str(), &env)) {
     setResult(0, INTERNAL_ERROR_STATUS, "zk error");
-    return -1;
+    return INTERNAL_ERROR_STATUS;
+  }
+
+  if (mkfifo(cnf_->fifo(), 0644) != 0 && errno != EEXIST) {
+    log_fatal(errno, "mkfifo %s error", cnf_->fifo());
+    setResult(0, INTERNAL_ERROR_STATUS, "mkfifo error");
+    return INTERNAL_ERROR_STATUS;
   }
 
   bool retry = true;
@@ -449,17 +464,20 @@ int ZkMgr::exec(int argc, char *argv[])
     retry = false;
 
     pid_t pid = exec(argc, argv, env, cnt);
-    if (pid < 0) return INTERNAL_ERROR_STATUS;
+    if (pid < 0) {
+      exitStatus = INTERNAL_ERROR_STATUS;
+      break;
+    }
 
-    bool childExit;
     do {
-      childExit = wait(pid, cnt, &retry, &exitStatus);
+      bool childExit = wait(pid, cnt, &retry, &exitStatus);
       rsyncFifoData();
       if (childExit) break;
       else millisleep(10);
     } while (true);
   }
 
+  unlink(cnf_->fifo());
   return exitStatus;
 }
 

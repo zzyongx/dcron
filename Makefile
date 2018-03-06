@@ -22,10 +22,13 @@ BUILDDIR = build
 
 OBJS    = $(BUILDDIR)/configopt.o $(BUILDDIR)/zkmgr.o
 
-default: configure dcron
+default: configure dcron jsonpath
 	@echo finished
 
 dcron: $(BUILDDIR)/dcron.o $(OBJS)
+	$(CXX) $(CFLAGS) -o $(BUILDDIR)/$@ $^ $(ARLIBS) $(LDFLAGS)
+
+jsonpath: $(BUILDDIR)/jsonpath.o
 	$(CXX) $(CFLAGS) -o $(BUILDDIR)/$@ $^ $(ARLIBS) $(LDFLAGS)
 
 .PHONY: configure
