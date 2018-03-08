@@ -84,6 +84,7 @@ int main(int argc, char *argv[])
   } while (true);
 
   if (cnf->zkdump()) {
+    sleep(1);   // wait negotiate timeout
     std::string json;
     if (zkMgr->dump(&json)) dump(cnf->zkdump(), json);
     else fprintf(stderr, "HERE");

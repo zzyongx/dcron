@@ -183,13 +183,14 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
   mgr->mutex_      = &PTHREAD_MUTEX;
   mgr->cond_       = &PTHREAD_COND;
 
+  zoo_set_debug_level(ZOO_LOG_LEVEL_ERROR);
+
   mgr->zh_ = zookeeper_init(cnf->zkhost(), 0, 10, 0, mgr.get(), 0);
   if (!mgr->zh_) {
     snprintf(errbuf, ERRBUF_MAX, "%s zk connect %s error, %s", cnf->name(), cnf->zkhost(), strerror(errno));
     return 0;
   }
 
-  zoo_set_debug_level(ZOO_LOG_LEVEL_ERROR);
 //  zoo_set_log_callback(mgr->zh_, log_callback);
 
   if (!mgr->createWorkDir(errbuf)) return 0;
@@ -397,6 +398,14 @@ inline int getExitCode(int status)
   else return status;
 }
 
+inline void deleteEmptyFile(const std::string &file)
+{
+  struct stat st;
+  if (stat(file.c_str(), &st) == 0 && st.st_size == 0) {
+    unlink(file.c_str());
+  }
+}
+
 bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
 {
   pid_t npid = waitpid(pid, exitStatus, WNOHANG);
@@ -418,6 +427,11 @@ bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
         *retry = true;
       }
     }
+
+    if (cnf_->captureStdio()) {
+      deleteEmptyFile(cnf_->logdir() + "/" + cnf_->name() + ".stdout");
+      deleteEmptyFile(cnf_->logdir() + "/" + cnf_->name() + ".stderr");
+    }
     return true;
   } else {
     return false;
@@ -430,11 +444,18 @@ void ZkMgr::rsyncFifoData()
   ssize_t nn;
   std::map<std::string, std::string> env;
   while ((nn = read(fifoFd_, buffer, PIPE_BUF)) > 0) {
-    char *sp = (char *) memchr(buffer, '=', nn);
-    if (!sp) continue;
-    if (buffer[nn-1] == '\n') --nn;
-    env[std::string(buffer, sp - buffer)] = std::string(sp+1, buffer + nn - (sp+1));
-    if (env.size() > RENV_ITEM_MAX) env.erase(env.begin());
+    int start = 0;
+    int eq = -1;
+    for (int i = 0; i < nn; ++i) {
+      if (buffer[i] == '=') {
+        eq = i;
+      } else if (buffer[i] == '\n' && eq != -1) {
+        env[std::string(buffer + start, eq - start)] = std::string(buffer + eq+1, i - (eq+1));
+        eq = -1;
+        start = i + 1;
+      }
+      if (env.size() > RENV_ITEM_MAX) env.erase(env.begin());
+    }
   }
 
   if (nn == -1 && errno != EAGAIN) {
@@ -501,59 +522,49 @@ void ZkMgr::suspend()
   }
 }
 
+inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Value *root)
+{
+  int bufferLen = RENV_BUFFER_LEN;
+  int rc = zoo_get(zh, node, 0, buffer, &bufferLen, 0);
+  if (rc != ZOK) {
+    log_fatal(0, "zoo_get %s error, %s", node, zerror(rc));
+    return false;
+  }
+
+  if (bufferLen > 0) {
+    Json::Reader reader;
+    if (!reader.parse(buffer, buffer + bufferLen, *root)) return false;
+  }
+  return true;
+}
+
+
 bool ZkMgr::dump(std::string *json) const
 {
-  Json::Reader reader;
   Json::Value obj(Json::objectValue);
-
-  int bufferLen = RENV_BUFFER_LEN;
   std::auto_ptr<char> buffer(new char[RENV_BUFFER_LEN]);
 
-  int rc = zoo_get(zh_, llapNode_.c_str(), 0, buffer.get(), &bufferLen, 0);
-  if (rc != ZOK) {
-    log_fatal(0, "zoo_get %s error, %s", llapNode_.c_str(), zerror(rc));
-    return false;
-  }
+  Json::Value root = Json::Value(Json::objectValue);
+  if (zooGetJson(zh_, llapNode_.c_str(), buffer.get(), &root)) obj["llap"] = root;
 
-  if (bufferLen > 0) {
-    Json::Value root;
-    if (!reader.parse(buffer.get(), buffer.get() + bufferLen, root)) return false;
-    obj["llap"] = root;
-  } else {
-    obj["llap"] = Json::Value(Json::objectValue);
-  }
+  root = Json::Value(Json::arrayValue);
+  if (zooGetJson(zh_, workersNode_.c_str(), buffer.get(), &root)) obj["workers"] = root;
 
-  bufferLen = RENV_BUFFER_LEN;
-  rc = zoo_get(zh_, workersNode_.c_str(), 0, buffer.get(), &bufferLen, 0);
-  if (rc != ZOK) {
-    log_fatal(0, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
-    return false;
-  }
+  root = Json::nullValue;
+  zooGetJson(zh_, statusNode_.c_str(), buffer.get(), &root);
+  obj["status"] = root;
 
-  if (bufferLen > 0) {
-    Json::Value root;
-    if (!reader.parse(buffer.get(), buffer.get() + bufferLen, root)) return false;
-    obj["workers"] = root;
-  } else {
-    obj["workers"] = Json::Value(Json::arrayValue);
-  }
+  Json::Value array(Json::arrayValue);
+  for (int i = 0; i < 10; ++i) {
+    root = Json::Value(Json::objectValue);
 
-  bufferLen = RENV_BUFFER_LEN;
-  rc = zoo_get(zh_, statusNode_.c_str(), 0, buffer.get(), &bufferLen, 0);
-  if (rc == ZOK) {
-    if (bufferLen > 0) {
-      Json::Value root;
-      if (!reader.parse(buffer.get(), buffer.get() + bufferLen, root)) return false;
-      obj["status"] = root;
-    } else {
-      obj["status"] = Json::nullValue;
-    }
-  } else if (rc == ZNONODE) {
-    obj["status"] = Json::nullValue;
-  } else {
-    log_fatal(0, "zoo_get %s error, %s", statusNode_.c_str(), zerror(rc));
-    return false;
+    char result[32];
+    snprintf(result, 32, "/result%010d", i);
+    std::string resultPath = taskPath_ + result;
+
+    if (zooGetJson(zh_, resultPath.c_str(), buffer.get(), &root)) array.append(root);
   }
+  obj["result"] = array;
 
   obj["taskPath"]    = taskPath_;
   obj["statusNode"]  = statusNode_;

@@ -158,6 +158,8 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   opt->name_.assign(buffer);
 
   opt->fifo_ = opt->libdir_ + "/" + opt->name_ + ".fifo";
+
+  /* DEBUG conf */
   getenv("DCRON_ZKDUMP", &opt->zkdump_);
 
   return opt.release();
