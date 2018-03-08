@@ -24,8 +24,13 @@ public:
   bool llap() const { return llap_; }
   bool captureStdio() const { return captureStdio_; }
 
+  const char *user() const { return user_.c_str(); }
+  int uid() const { return uid_; }
+  int gid() const { return gid_; }
+
 private:
   ConfigOpt() {}
+  bool parseUser(const char *user, char *errbuf);
 
   std::string id_;
   std::string zkhost_;
@@ -38,7 +43,9 @@ private:
   bool stick_;
   bool captureStdio_;
 
-  int negotiateTimeout_;
+  std::string user_;
+  int uid_;
+  int gid_;
 
   std::string libdir_;
   std::string logdir_;

@@ -4,6 +4,8 @@
 #include <memory>
 #include <errno.h>
 #include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -63,7 +65,7 @@ inline bool getenv(const char *name, bool *b, bool def)
   return true;
 }
 
-inline bool getIpByEth(const char *eth, std::string *ip)
+static bool getIpByEth(const char *eth, std::string *ip)
 {
   struct ifreq ifr;
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -87,6 +89,37 @@ inline bool getIpByEth(const char *eth, std::string *ip)
 }
 
 #define ERRBUF_MAX 256
+
+bool ConfigOpt::parseUser(const char *username, char *errbuf)
+{
+  const char *colon = strchr(username, ':');
+  std::string u, g;
+  if (colon) {
+    u.assign(username, colon - username);
+    g.assign(colon+1);
+  } else {
+    u.assign(username);
+    g.assign(u);
+  }
+
+  struct passwd *pwd = getpwnam(u.c_str());
+  if (!pwd) {
+    snprintf(errbuf, ERRBUF_MAX, "getpwnam(%s) error, %s", u.c_str(), strerror(errno));
+    return false;
+  }
+
+  struct group *grp = getgrnam(g.c_str());
+  if (!grp) {
+    snprintf(errbuf, ERRBUF_MAX, "getgrnam(%s) error, %s", g.c_str(), strerror(errno));
+    return false;
+  }
+
+  uid_ = pwd->pw_uid;
+  gid_ = grp->gr_gid;
+  user_ = u;
+  return true;
+}
+
 ConfigOpt *ConfigOpt::create(char *errbuf)
 {
   std::auto_ptr<ConfigOpt> opt(new ConfigOpt);
@@ -134,6 +167,11 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
 
   getenv("DCRON_LIBDIR", &opt->libdir_, "/var/lib/dcron");
   getenv("DCRON_LOGDIR", &opt->logdir_, "/var/log/dcron");
+
+  std::string user;
+  getenv("DCRON_USER", &user);
+
+  if (!user.empty() && !opt->parseUser(user.c_str(), errbuf)) return 0;
 
   if (!getenv("DCRON_NAME", &str)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_NAME is required");

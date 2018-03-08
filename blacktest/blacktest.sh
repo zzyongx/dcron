@@ -120,4 +120,13 @@ test "$STATUS" = 0 || {
   exit 1
 }
 
+sleep 60
+export DCRON_USER="nobody:nobody"
+$DCRON $BINDIR/dumb.sh setuid
+STATUS=$(cat $ZKDUMP | $JPATH 'status.status')
+test "$STATUS" = 0 || {
+  echo "$LINENO status.status error"
+  exit 1
+}
+
 echo "OK"

@@ -3,6 +3,8 @@
 #include <memory>
 #include <errno.h>
 #include <limits.h>
+#include <sys/types.h>
+#include <grp.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <json/json.h>
@@ -354,6 +356,16 @@ static bool setRemoteEnv(zhandle_t *zh, const char *path, std::map<std::string, 
   }
 }
 
+inline bool setuid(const char *user, int uid, int gid)
+{
+  if (user && geteuid() == 0) {
+    if (setgid(gid) == -1) return false;
+    if (initgroups(user, gid) == -1) return false;
+    if (setuid(uid) == -1) return false;
+  }
+  return true;
+}
+
 #define INTERNAL_ERROR_STATUS 254
 pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::string> &env, int cnt)
 {
@@ -367,6 +379,11 @@ pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::strin
 
   pid_t pid = fork();
   if (pid == 0) {
+    if (!setuid(cnf_->user(), cnf_->uid(), cnf_->gid())) {
+      log_fatal(errno, "setuid(%s) error", cnf_->user());
+      exit(EXIT_FAILURE);
+    }
+
     if (cnf_->captureStdio()) {
       std::string iof = cnf_->logdir() + "/" + cnf_->name() + ".stdout";
       int logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
@@ -476,6 +493,12 @@ int ZkMgr::exec(int argc, char *argv[])
   if (mkfifo(cnf_->fifo(), 0644) != 0 && errno != EEXIST) {
     log_fatal(errno, "mkfifo %s error", cnf_->fifo());
     setResult(0, INTERNAL_ERROR_STATUS, "mkfifo error");
+    return INTERNAL_ERROR_STATUS;
+  }
+
+  if (cnf_->user() && chown(cnf_->fifo(), cnf_->uid(), cnf_->gid()) == -1) {
+    log_fatal(errno, "chown %s error", cnf_->fifo());
+    setResult(0, INTERNAL_ERROR_STATUS, "chown error");
     return INTERNAL_ERROR_STATUS;
   }
 

@@ -26,8 +26,25 @@ test_fifo_get()
 test_fifo_set()
 {
   for i in $(seq -f "%02g" 1 10); do
-    echo "DUMB_${i}=$i" >> $DCRON_FIFO
+    echo "DUMB_${i}=$i" > $DCRON_FIFO
   done
+}
+
+test_setuid()
+{
+  local user=$(id -n -u)
+  local group=$(id -n -g)
+
+  (test "$user" = "nobody" && test "$group" = "nobody") || {
+    echo "user expects nobody, got $user. group expects nobody, got $group"
+    exit 1
+  }
+
+  echo "DUMB_01=01" > $DCRON_FIFO
+  if [ $? != 0 ]; then
+    echo "fifo can not be written after setuid"
+    exit 1
+  fi
 }
 
 cmd=${1:null}
@@ -35,4 +52,5 @@ cmd=${1:null}
 case $cmd in
   "fifo_set" ) test_fifo_set ;;
   "fifo_get" ) test_fifo_get ;;
+  "setuid" )   test_setuid ;;
 esac
