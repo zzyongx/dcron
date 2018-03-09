@@ -233,12 +233,12 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
 
   if (!mgr->createWorkDir(errbuf)) return 0;
 
-  if (getStickFile(cnf->libdir(), cnf->name(), cnf->stick())) {
+  if (getStickFile(cnf->libdir(), cnf->name(), cnf->stick()) || cnf->tcrash()) {
     if (cnf->zkdump()) dump_stick(cnf->id());
 
     mgr->status_ = mgr->competeMaster(true, errbuf);
   } else {
-    millisleep(random() % 999999);
+    millisleep(200 + random() % 999999);
     mgr->status_ = mgr->competeMaster(true, errbuf);
   }
 
@@ -527,6 +527,8 @@ void ZkMgr::rsyncFifoData()
 
 int ZkMgr::exec(int argc, char *argv[])
 {
+  if (cnf_->tcrash()) abort();
+
   std::map<std::string, std::string> env;
   if (!getRomoteEnv(zh_, llapNode_.c_str(), &env)) {
     setResult(0, INTERNAL_ERROR_STATUS, "zk error");
@@ -570,6 +572,8 @@ int ZkMgr::exec(int argc, char *argv[])
 
 void ZkMgr::suspend()
 {
+  log_info(0, "%s %s suspend", cnf_->id(), cnf_->name());
+
   pthread_mutex_lock(mutex_);
   if (!masterExit_) pthread_cond_wait(cond_, mutex_);
   pthread_mutex_unlock(mutex_);
@@ -603,7 +607,6 @@ inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Valu
   }
   return true;
 }
-
 
 bool ZkMgr::dump(std::string *json) const
 {

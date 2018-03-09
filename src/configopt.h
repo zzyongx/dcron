@@ -12,7 +12,9 @@ public:
   const char *name() const { return name_.c_str(); }
   const char *zkhost() const { return zkhost_.c_str(); }
   const char *fifo() const { return fifo_.c_str(); }
+
   const char *zkdump() const { return zkdump_.empty() ? 0 : zkdump_.c_str(); }
+  bool tcrash() const { return tcrash_; }
 
   std::string logdir() const { return logdir_; }
   std::string libdir() const { return libdir_; }
@@ -50,7 +52,9 @@ private:
   std::string libdir_;
   std::string logdir_;
   std::string fifo_;
+
   std::string zkdump_;
+  bool tcrash_;
 };
 
 #endif

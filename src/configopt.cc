@@ -209,6 +209,7 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
 
   /* DEBUG conf */
   getenv("DCRON_ZKDUMP", &opt->zkdump_);
+  getenv("DCRON_TEST_CRASH", &opt->tcrash_, false);
 
   return opt.release();
 }
