@@ -209,7 +209,9 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   }
   opt->name_.assign(buffer);
 
+  /* parameter correction */
   opt->fifo_ = opt->libdir_ + "/" + opt->name_ + ".fifo";
+  if (opt->llap_) opt->retryStrategy_ = RETRY_ON_CRASH;
 
   /* DEBUG conf */
   getenv("DCRON_ZKDUMP", &opt->zkdump_);

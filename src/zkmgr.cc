@@ -140,7 +140,9 @@ ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
     int bufferLen = 1024;
     int rc = zoo_get(zh_, workersNode_.c_str(), 0, buffer, &bufferLen, &stat);
     if (rc != ZOK) {
-      snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
+      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
+      else log_fatal(0, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
+
       return ZKFATAL;
     }
 
@@ -150,7 +152,9 @@ ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
     } else {
       Json::Reader reader;
       if (!reader.parse(buffer, buffer + bufferLen, array)) {
-        snprintf(errbuf, ERRBUF_MAX, "%s content %s error", workersNode_.c_str(), buffer);
+        if (errbuf) snprintf(errbuf, ERRBUF_MAX, "%s content %s error", workersNode_.c_str(), buffer);
+        else log_fatal(0, "%s content %s error", workersNode_.c_str(), buffer);
+
         return ZKFATAL;
       }
     }
@@ -162,11 +166,18 @@ ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
     std::string json = Json::FastWriter().write(array);
     if (json[json.size()-1] == '\n') json.resize(json.size()-1);
 
-    log_info(0, "zoo_set workers %s %s", workersNode_.c_str(), json.c_str());
+    if (errbuf) printf("zoo_set workers %s %s\n", workersNode_.c_str(), json.c_str());
+    else log_info(0, "zoo_set workers %s %s", workersNode_.c_str(), json.c_str());
 
     rc = zoo_set(zh_, workersNode_.c_str(), json.c_str(), json.size(), stat.version);
-    if (rc == ZOK) return master ? MASTER : SLAVE;
-    else if (rc != ZBADVERSION) return ZKFATAL;
+    if (rc == ZOK) {
+      return master ? MASTER : SLAVE;
+    } else if (rc != ZBADVERSION) {
+      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
+      else log_fatal(0, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
+
+      return ZKFATAL;
+    }
   } while (true);
 }
 
@@ -177,14 +188,11 @@ ZkMgr::NodeStatus ZkMgr::competeMaster(bool first, char *errbuf)
   if (rc == ZOK) {
     return first ? joinWorkers(true, errbuf) : MASTER;
   } else if (rc == ZNODEEXISTS) {
-    if (cnf_->llap()) return OUT;
-    else return first ? joinWorkers(false, errbuf) : SLAVE;
+    return first ? joinWorkers(false, errbuf) : SLAVE;
   } else {
-    if (errbuf) {
-      snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
-    } else {
-      log_fatal(0, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
-    }
+    if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
+    else log_fatal(0, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
+
     return ZKFATAL;
   }
 }
@@ -204,11 +212,17 @@ void ZkMgr::watchMasterNode(zhandle_t *, int type, int state, const char *path, 
   }
 }
 
-ZkMgr::NodeStatus ZkMgr::setWatch()
+ZkMgr::NodeStatus ZkMgr::setWatch(char *errbuf)
 {
   int rc = zoo_wexists(zh_, masterNode_.c_str(), watchMasterNode, this, 0);
-  if (rc == ZOK) return ZKOK;
-  else return ZKFATAL;
+  if (rc == ZOK) {
+    return ZKOK;
+  } else {
+    if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
+    else log_fatal(0, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
+
+    return ZKFATAL;
+  }
 }
 
 ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
@@ -242,11 +256,14 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
     mgr->status_ = mgr->competeMaster(true, errbuf);
   }
 
-  if (mgr->status_ == ZKFATAL) return 0;
-
   if (mgr->status_ == SLAVE) {
-    if (mgr->setWatch() != ZKOK) mgr->status_ = ZKFATAL;
+    if (cnf->retryStrategy() == ConfigOpt::RETRY_NOTHING) {
+      mgr->status_ = OUT;
+    } else {
+      if (mgr->setWatch(errbuf) != ZKOK) mgr->status_ = ZKFATAL;
+    }
   }
+
   return mgr.release();
 }
 
@@ -570,28 +587,6 @@ int ZkMgr::exec(int argc, char *argv[])
   return exitStatus;
 }
 
-void ZkMgr::suspend()
-{
-  log_info(0, "%s %s suspend", cnf_->id(), cnf_->name());
-
-  pthread_mutex_lock(mutex_);
-  if (!masterExit_) pthread_cond_wait(cond_, mutex_);
-  pthread_mutex_unlock(mutex_);
-
-  int bufferLen = 8;
-  char buffer[8];
-  int rc = zoo_get(zh_, statusNode_.c_str(), 0, buffer, &bufferLen, 0);
-  if (rc == ZOK) {
-    status_ = OUT;
-    return;
-  }
-
-  status_ = competeMaster(false, 0);
-  if (status_ == SLAVE) {
-    if (setWatch() != ZKOK) status_ = ZKFATAL;
-  }
-}
-
 inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Value *root)
 {
   int bufferLen = RENV_BUFFER_LEN;
@@ -606,6 +601,51 @@ inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Valu
     if (!reader.parse(buffer, buffer + bufferLen, *root)) return false;
   }
   return true;
+}
+
+void ZkMgr::suspend()
+{
+  log_info(0, "%s %s suspend", cnf_->id(), cnf_->name());
+
+  pthread_mutex_lock(mutex_);
+  if (!masterExit_) pthread_cond_wait(cond_, mutex_);
+  pthread_mutex_unlock(mutex_);
+
+  log_info(0, "%s %s wake up", cnf_->id(), cnf_->name());
+
+  if (!cnf_->llap()) {
+    int bufferLen = RENV_BUFFER_LEN;
+    std::auto_ptr<char> buffer(new char[bufferLen]);
+    int rc = zoo_get(zh_, statusNode_.c_str(), 0, buffer.get(), &bufferLen, 0);
+
+    if (cnf_->retryStrategy() == ConfigOpt::RETRY_ON_ABEXIT) {
+      if (rc == ZOK) status_ = OUT;
+      else if (rc != ZNONODE) status_ = ZKFATAL;
+    } else {   // ConfigOpt::RETRY_ON_CRASH
+      if (rc == ZOK) {
+        Json::Reader reader;
+        Json::Value  root;
+        if (bufferLen > 0 && reader.parse(buffer.get(), buffer.get() + bufferLen, root)) {
+          if (root["status"].asInt() == 0) status_ = OUT;
+        }
+      } else if (rc != ZNONODE) {
+        status_ = ZKFATAL;
+      }
+    }
+
+    if (status_ == ZKFATAL) {
+      log_fatal(0, "zoo_get %s error, %s", statusNode_.c_str(), zerror(rc));
+    }
+  }
+
+  if (status_ == SLAVE) {
+    log_info(0, "%s %s run", cnf_->id(), cnf_->name());
+
+    status_ = competeMaster(false, 0);
+    if (status_ == SLAVE) {
+      if (setWatch(0) != ZKOK) status_ = ZKFATAL;
+    }
+  }
 }
 
 bool ZkMgr::dump(std::string *json) const

@@ -73,6 +73,8 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  if (cnf->llap()) daemon(1, 1);
+
   if (cnf->rlimitAs() && !setRlimitAs(cnf->rlimitAs())) {
     fprintf(stderr, "%d:%s setrlimit(RLIMIT_AS) error", errno, strerror(errno));
     return EXIT_FAILURE;
@@ -91,13 +93,15 @@ int main(int argc, char *argv[])
 
   int status;
   do {
-    if (zkMgr->status() == ZkMgr::OUT) {
-      return EXIT_SUCCESS;
-    } else if (zkMgr->status() == ZkMgr::MASTER) {
+    if (zkMgr->status() == ZkMgr::MASTER) {
       status = zkMgr->exec(argc-1, argv+1);
       break;
-    } else {
+    } else if (zkMgr->status() == ZkMgr::SLAVE) {
       zkMgr->suspend();
+    } else if (zkMgr->status() == ZkMgr::OUT) {
+      return EXIT_SUCCESS;
+    } else {
+      return EXIT_FAILURE;
     }
   } while (true);
 

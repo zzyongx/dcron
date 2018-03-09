@@ -68,6 +68,12 @@ test_abexit()
   exit 1
 }
 
+test_llap()
+{
+  sleep 30
+  exit 0
+}
+
 test_exit0()
 {
   exit 0
@@ -83,4 +89,5 @@ case $cmd in
   "abexit" )   test_abexit ;;
   "exit0" )    test_exit0 ;;
   "limitas" )  test_limit_as;;
+  "llap" )     test_llap ;;
 esac

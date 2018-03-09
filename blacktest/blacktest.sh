@@ -146,8 +146,8 @@ test_crash()
 {
   local save_retryon=$DCRON_RETRYON
   rm -f $LIBDIR/blacktest.stick
-
   export DCRON_RETRYON=CRASH
+
   export DCRON_TEST_CRASH=1
   export DCRON_ID=node-a
   $DCRON $BINDIR/dumb.sh &
@@ -176,6 +176,7 @@ test_crash()
   }
 
   export DCRON_RETRYON=$save_retryon
+  unset DCRON_TEST_CRASH
 }
 
 test_rlimit_as()
@@ -196,8 +197,34 @@ test_rlimit_as()
     exit 1
   }
 
-  export DCRON_RLIMIT_AS=""
-  export DCRON_MAXRETRY=""
+  unset DCRON_RLIMIT_AS
+  unset DCRON_MAXRETRY
+}
+
+test_llap()
+{
+  export DCRON_LLAP=true
+  rm -f $LIBDIR/blackbox.stick
+
+  export DCRON_ID=node-a
+  $DCRON $BINDIR/dumb.sh llap
+
+  export DCRON_ID=node-b
+  $DCRON $BINDIR/dumb.sh llap
+
+  sleep 40
+  ps -ef | grep -q llap || {
+    echo "$LINENO llap was not found"
+    exit 1
+  }
+
+  sleep 40  # wait exit
+  ps -ef | grep -q -v llap || {
+    echo "$LINENO llap was found"
+    exit 1
+  }
+
+  unset DCRON_LLAP
 }
 
 test_stick()
@@ -241,7 +268,7 @@ test_stick()
     exit 1
   }
 
-  export DCRON_STICK=""
+  unset DCRON_STICK
 }
 
 echo "TEST DCRON exit0"
@@ -270,5 +297,9 @@ test_stick
 echo "TEST DCRON_RLIMIT_AS"
 sleep 2
 test_rlimit_as
+
+echo "TEST DCRON_LLAP"
+sleep 2
+test_llap
 
 echo "OK"

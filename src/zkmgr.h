@@ -20,7 +20,7 @@ private:
   bool createWorkDir(char *errbuf);
   NodeStatus competeMaster(bool first, char *errbuf);
   NodeStatus joinWorkers(bool master, char *errbuf);
-  NodeStatus setWatch();
+  NodeStatus setWatch(char *errbuf);
   pid_t exec(int argc, char *argv[], const std::map<std::string, std::string> &env, int cnt);
   bool wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus);
   void setStatus(int status);
