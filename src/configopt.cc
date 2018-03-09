@@ -180,8 +180,12 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
 
   std::string user;
   getenv("DCRON_USER", &user);
-
   if (!user.empty() && !opt->parseUser(user.c_str(), errbuf)) return 0;
+
+  if (!getenv("DCRON_RLIMIT_AS", &opt->rlimitAs_, 0)) {
+    snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_RLIMIT_AS is not a number");
+    return 0;
+  }
 
   if (!getenv("DCRON_NAME", &str)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_NAME is required");

@@ -55,6 +55,14 @@ test_stick()
   }
 }
 
+test_limit_as()
+{
+  local s="TEST_TEST_TEST_TEST_TEST"
+  for i in $(seq 1 26); do
+    s="$s:${s}_${i}"  # 800Mb
+  done
+}
+
 test_abexit()
 {
   exit 1
@@ -74,4 +82,5 @@ case $cmd in
   "stick" )    test_stick ;;
   "abexit" )   test_abexit ;;
   "exit0" )    test_exit0 ;;
+  "limitas" )  test_limit_as;;
 esac

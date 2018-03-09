@@ -30,6 +30,8 @@ public:
   int uid() const { return uid_; }
   int gid() const { return gid_; }
 
+  int rlimitAs() const { return rlimitAs_; }
+
 private:
   ConfigOpt() {}
   bool parseUser(const char *user, char *errbuf);
@@ -55,6 +57,8 @@ private:
 
   std::string zkdump_;
   bool tcrash_;
+
+  int rlimitAs_;
 };
 
 #endif

@@ -145,6 +145,7 @@ test_user()
 test_crash()
 {
   local save_retryon=$DCRON_RETRYON
+  rm -f $LIBDIR/blacktest.stick
 
   export DCRON_RETRYON=CRASH
   export DCRON_TEST_CRASH=1
@@ -171,9 +172,32 @@ test_crash()
   local nodeb=$(cat $ZKDUMP | $JPATH 'workers[1]')
   test "$node" = "$nodeb" || {
     echo "$LINENO status.id error"
+    exit 1
   }
 
   export DCRON_RETRYON=$save_retryon
+}
+
+test_rlimit_as()
+{
+  export DCRON_RLIMIT_AS=600
+  export DCRON_MAXRETRY=1
+
+  $DCRON $BINDIR/dumb.sh exit0
+  test $? = 0 || {
+    echo "$LINENO status error"
+    exit 1
+  }
+
+  sleep 1
+  $DCRON $BINDIR/dumb.sh limitas
+  test $? != 0 || {
+    echo "$LINENO status error"
+    exit 1
+  }
+
+  export DCRON_RLIMIT_AS=""
+  export DCRON_MAXRETRY=""
 }
 
 test_stick()
@@ -242,5 +266,9 @@ test_user
 echo "TEST DCRON_STICK"
 sleep 2
 test_stick
+
+echo "TEST DCRON_RLIMIT_AS"
+sleep 2
+test_rlimit_as
 
 echo "OK"

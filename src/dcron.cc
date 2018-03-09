@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
+#include <sys/resource.h>
 
 #include "logger.h"
 #include "configopt.h"
@@ -40,6 +41,17 @@ static bool which(const char *file, std::string *fullPath)
   return false;
 }
 
+inline bool setRlimitAs(int limit)
+{
+  if (limit < 500) limit = 500;
+
+  struct rlimit rlmt;
+  rlmt.rlim_cur = limit * 1024 * 1024;
+  rlmt.rlim_max = limit * 1024 * 1024;
+
+  return setrlimit(RLIMIT_AS, &rlmt) != -1;
+}
+
 int main(int argc, char *argv[])
 {
   if (argc == 1) {
@@ -58,6 +70,11 @@ int main(int argc, char *argv[])
   ConfigOpt *cnf = ConfigOpt::create(errbuf);
   if (!cnf) {
     fprintf(stderr, "config error %s\n", errbuf);
+    return EXIT_FAILURE;
+  }
+
+  if (cnf->rlimitAs() && !setRlimitAs(cnf->rlimitAs())) {
+    fprintf(stderr, "%d:%s setrlimit(RLIMIT_AS) error", errno, strerror(errno));
     return EXIT_FAILURE;
   }
 
