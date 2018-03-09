@@ -19,10 +19,10 @@ export DCRON_ID=node-a
 export DCRON_NAME=hold.%Y%m%d_%H%M
 TASKID=$(date +%Y%m%d_%H%M)
 
-$DCRON touch $BINDIR/hold &
+$DCRON $BINDIR/dumb.sh exit0 &
 
 export DCRON_ID=node-b
-$DCRON touch $BINDIR/hold
+$DCRON $BINDIR/dumb.sh exit0
 
 test ! -f $LOGDIR/$TASKID.stdout || {
   echo "empty stdout file should not exist"
@@ -74,10 +74,11 @@ ID=$(cat $ZKDUMP | $JPATH 'status.id')
   exit 1
 }
 
+echo "TEST DCRON_ABEXIT"
 sleep 60   # particle size of cron is minutes
 export DCRON_RETRYON=ABEXIT
 export DCRON_ID=node-a
-$DCRON touch $BINDIR/ENOTDIR/hold
+$DCRON $BINDIR/dumb.sh abexit
 
 STATUS=$(cat $ZKDUMP | $JPATH 'status.status')
 test "$STATUS" = 1 || {
@@ -98,6 +99,7 @@ test "$STATUS" = 1 || {
   exit 1
 }
 
+echo "TEST fifo"
 sleep 60
 $DCRON $BINDIR/dumb.sh fifo_set
 
@@ -120,6 +122,7 @@ test "$STATUS" = 0 || {
   exit 1
 }
 
+echo "TEST DCRON_USER"
 sleep 60
 export DCRON_USER="nobody:nobody"
 $DCRON $BINDIR/dumb.sh setuid

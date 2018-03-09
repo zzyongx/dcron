@@ -15,6 +15,9 @@
 #define ERRBUF_MAX 1024
 
 extern char **environ;
+static std::string ENV_STICK;
+#define dump_stick(id) ENV_STICK.assign("DCRON_TEST_STICK=").append((id))
+
 static pthread_mutex_t PTHREAD_MUTEX = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  PTHREAD_COND  = PTHREAD_COND_INITIALIZER;
 
@@ -50,6 +53,39 @@ inline bool createNodeIfNotExist(zhandle_t *zh, const char *node, char *errbuf)
   } else {
     return true;
   }
+}
+
+static bool createStickFile(const std::string &libdir, const char *name)
+{
+  const char *dot = strrchr(name, '.');
+  if (!dot) return false;
+
+  std::string stickFile = libdir + "/" + std::string(name, dot - name) + ".stick";
+  FILE *fp = fopen(stickFile.c_str(), "w");
+  if (!fp) return false;
+
+  fprintf(fp, "%ld", (long) time(0));
+  fclose(fp);
+  return true;
+}
+
+static bool getStickFile(const std::string &libdir, const char *name, int stick)
+{
+  const char *dot = strrchr(name, '.');
+  assert(dot);
+
+  std::string stickFile = libdir + "/" + std::string(name, dot - name) + ".stick";
+  FILE *fp = fopen(stickFile.c_str(), "r");
+  if (!fp) return false;
+
+  bool rc = false;
+  long lastExecTime = 0;
+  if (fscanf(fp, "%ld", &lastExecTime) == 1 && time(0) - lastExecTime < stick) {
+    rc = true;
+  }
+  fclose(fp);
+  unlink(stickFile.c_str());
+  return rc;
 }
 
 /* x.y.<taskid> -> /x/y/<taskid>
@@ -197,7 +233,9 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
 
   if (!mgr->createWorkDir(errbuf)) return 0;
 
-  if (cnf->stick()) {
+  if (getStickFile(cnf->libdir(), cnf->name(), cnf->stick())) {
+    if (cnf->zkdump()) dump_stick(cnf->id());
+
     mgr->status_ = mgr->competeMaster(true, errbuf);
   } else {
     millisleep(random() % 999999);
@@ -273,6 +311,9 @@ inline char * const *buildEnv(ConfigOpt *cnf, const std::map<std::string, std::s
     snprintf(ptr, 4096, "DCRON_%s=%s", ite->first.c_str(), ite->second.c_str());
     envp[i++] = ptr;
   }
+
+  /* used for test */
+  if (!ENV_STICK.empty()) envp[i++] = (char *) ENV_STICK.c_str();
 
   for (int j = 0; i < MAX_ENVP_NUM && environ[j]; ++j) envp[i++] = environ[j];
   envp[i++] = 0;
@@ -379,11 +420,6 @@ pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::strin
 
   pid_t pid = fork();
   if (pid == 0) {
-    if (!setuid(cnf_->user(), cnf_->uid(), cnf_->gid())) {
-      log_fatal(errno, "setuid(%s) error", cnf_->user());
-      exit(EXIT_FAILURE);
-    }
-
     if (cnf_->captureStdio()) {
       std::string iof = cnf_->logdir() + "/" + cnf_->name() + ".stdout";
       int logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
@@ -392,6 +428,11 @@ pid_t ZkMgr::exec(int argc, char *argv[], const std::map<std::string, std::strin
       iof = cnf_->logdir() + "/" + cnf_->name() + ".stderr";
       logFd = open(iof.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
       if (logFd != -1) dup2(logFd, STDERR_FILENO);
+    }
+
+    if (!setuid(cnf_->user(), cnf_->uid(), cnf_->gid())) {
+      log_fatal(errno, "setuid(%s) error", cnf_->user());
+      exit(EXIT_FAILURE);
     }
 
     if (execve(argv[0], argv, buildEnv(cnf_, env)) == -1) {
@@ -449,6 +490,8 @@ bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
       deleteEmptyFile(cnf_->logdir() + "/" + cnf_->name() + ".stdout");
       deleteEmptyFile(cnf_->logdir() + "/" + cnf_->name() + ".stderr");
     }
+
+    if (cnf_->stick()) createStickFile(cnf_->libdir(), cnf_->name());
     return true;
   } else {
     return false;

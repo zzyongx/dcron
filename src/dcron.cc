@@ -72,11 +72,12 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  int status;
   do {
     if (zkMgr->status() == ZkMgr::OUT) {
       return EXIT_SUCCESS;
     } else if (zkMgr->status() == ZkMgr::MASTER) {
-      zkMgr->exec(argc-1, argv+1);
+      status = zkMgr->exec(argc-1, argv+1);
       break;
     } else {
       zkMgr->suspend();
@@ -87,8 +88,7 @@ int main(int argc, char *argv[])
     sleep(1);   // wait negotiate timeout
     std::string json;
     if (zkMgr->dump(&json)) dump(cnf->zkdump(), json);
-    else fprintf(stderr, "HERE");
   }
 
-  return EXIT_SUCCESS;
+  return status;
 }

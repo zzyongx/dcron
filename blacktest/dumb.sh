@@ -47,10 +47,31 @@ test_setuid()
   fi
 }
 
+test_stick()
+{
+  test "$DCRON_TEST_STICK" = "node-a" || {
+    echo "stick expect node-a, get $DCRON_TEST_STICK"
+    exit 1
+  }
+}
+
+test_abexit()
+{
+  exit 1
+}
+
+test_exit0()
+{
+  exit 0
+}
+
 cmd=${1:null}
 
 case $cmd in
   "fifo_set" ) test_fifo_set ;;
   "fifo_get" ) test_fifo_get ;;
   "setuid" )   test_setuid ;;
+  "stick" )    test_stick ;;
+  "abexit" )   test_abexit ;;
+  "exit0" )    test_exit0 ;;
 esac

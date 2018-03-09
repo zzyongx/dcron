@@ -20,7 +20,7 @@ public:
   size_t maxRetry() const { return maxRetry_; }
   RetryStrategy retryStrategy() const { return retryStrategy_; }
 
-  bool stick() const { return stick_; }
+  int stick() const { return stick_ > 0 ? stick_ : 0; }
   bool llap() const { return llap_; }
   bool captureStdio() const { return captureStdio_; }
 
@@ -40,7 +40,7 @@ private:
   RetryStrategy retryStrategy_;
 
   bool llap_;
-  bool stick_;
+  int  stick_;
   bool captureStdio_;
 
   std::string user_;

@@ -155,8 +155,8 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
     return 0;
   }
 
-  if (!getenv("DCRON_STICK", &opt->stick_, opt->llap_)) {
-    snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_STICK is not a boolean");
+  if (!getenv("DCRON_STICK", &opt->stick_, opt->llap_ ? 90 : 0)) {
+    snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_STICK is not a number");
     return 0;
   }
 
@@ -167,6 +167,16 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
 
   getenv("DCRON_LIBDIR", &opt->libdir_, "/var/lib/dcron");
   getenv("DCRON_LOGDIR", &opt->logdir_, "/var/log/dcron");
+
+  struct stat st;
+  if (stat(opt->libdir_.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+    snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_LIBDIR %s is not a directory", opt->libdir_.c_str());
+    return 0;
+  }
+  if (stat(opt->logdir_.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+    snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_LOGDIR %s is not a directory", opt->logdir_.c_str());
+    return 0;
+  }
 
   std::string user;
   getenv("DCRON_USER", &user);
