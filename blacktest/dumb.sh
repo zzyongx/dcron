@@ -79,6 +79,13 @@ test_exit0()
   exit 0
 }
 
+test_zk_session_expired()
+{
+  echo "ERROR" > $DCRON_DUMB_RESULT
+  sleep 30
+  echo "OK" > $DCRON_DUMB_RESULT
+}
+
 cmd=${1:null}
 
 case $cmd in
@@ -90,4 +97,5 @@ case $cmd in
   "exit0" )    test_exit0 ;;
   "limitas" )  test_limit_as;;
   "llap" )     test_llap ;;
+  "sleep30")   test_zk_session_expired ;;
 esac

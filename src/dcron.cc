@@ -85,6 +85,9 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  // redirect stderr to logger
+  Logger::defLogger->bindStderr();
+
   ZkMgr *zkMgr = ZkMgr::create(cnf, errbuf);
   if (!zkMgr) {
     log_fatal(0, "%s create ZkMgr error, %s", cnf->name(), errbuf);
@@ -93,6 +96,8 @@ int main(int argc, char *argv[])
 
   int status;
   do {
+    log_info(0, "%s %s status %s", cnf->id(), cnf->name(), ZkMgr::statusToString(zkMgr->status()));
+
     if (zkMgr->status() == ZkMgr::MASTER) {
       status = zkMgr->exec(argc-1, argv+1);
       break;

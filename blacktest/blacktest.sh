@@ -15,49 +15,53 @@ ZKDUMP=$BINDIR/zkdump
 export DCRON_ZKDUMP=$ZKDUMP
 export DCRON_ZK=$DCRON_ZK
 export DCRON_RETRYON=ABEXIT
-export DCRON_STICK=""
+unset DCRON_STICK
 
 export DCRON_NAME=blackbox.%Y%m%d_%H%M%S
 TASKID=$(date +%Y%m%d_%H%M%S)
 
 test_exit0()
 {
+  rm -f $ZKDUMP
+
   export DCRON_ID=node-a
   $DCRON $BINDIR/dumb.sh exit0 &
 
   export DCRON_ID=node-b
-  $DCRON $BINDIR/dumb.sh exit0
+  $DCRON $BINDIR/dumb.sh exit0 &
+
+  wait # wait dcron
 
   test ! -f $LOGDIR/$TASKID.stdout || {
-    echo "empty stdout file should not exist"
+    echo "$LINENO empty stdout file should not exist"
     exit 1
   }
 
   test ! -f $LOGDIR/$TASKID.stderr || {
-    echo "empty stderr file should not exist"
+    echo "$LINENO empty stderr file should not exist"
     exit 1
   }
 
   test ! -f $LIBDIR/$TASKID.fifo || {
-    echo "fifo file should not exist"
+    echo "$LINENO fifo file should not exist"
     exit 1
   }
 
   NODE=$(cat $ZKDUMP | $JPATH 'llapNode')
   test "$NODE" = "/blackbox/llap" || {
-    echo "llapNode error $NODE"
+    echo "$LINENO llapNode error $NODE"
     exit 1
   }
 
   NODE=$(cat $ZKDUMP | $JPATH 'statusNode')
   test "$NODE" = "/blackbox/$TASKID/status" || {
-    echo "statusNode error $NODE"
+    echo "$LINENO statusNode error $NODE"
     exit 1
   }
 
   NODE=$(cat $ZKDUMP | $JPATH 'workersNode')
   test "$NODE" = "/blackbox/$TASKID/workers" || {
-    echo "workersNode error $NODE"
+    echo "$LINENO workersNode error $NODE"
     exit 1
   }
 
@@ -154,7 +158,9 @@ test_crash()
 
   export DCRON_TEST_CRASH=0
   export DCRON_ID=node-b
-  $DCRON $BINDIR/dumb.sh
+  $DCRON $BINDIR/dumb.sh &
+
+  wait # wait
 
   local status=$(cat $ZKDUMP | $JPATH 'status.status')
   test "$status" = 0 || {
@@ -269,6 +275,11 @@ test_stick()
   }
 
   unset DCRON_STICK
+}
+
+test "$TESTCASE" != "" && {
+  $TESTCASE
+  exit 0
 }
 
 echo "TEST DCRON exit0"

@@ -88,6 +88,19 @@ static bool getStickFile(const std::string &libdir, const char *name, int stick)
   return rc;
 }
 
+const char *ZkMgr::statusToString(NodeStatus status)
+{
+  switch (status) {
+  case MASTER:  return "master";
+  case SLAVE:   return "slave";
+  case OUT:     return "out";
+  case ZKOK:    return "zkok";
+  case ZKAGAIN: return "zkagain";
+  case ZKFATAL: return "zkfatal";
+  default: return "unknow";
+  }
+}
+
 /* x.y.<taskid> -> /x/y/<taskid>
  * - /x/y/llap  persistent data across sessions
  * - <taskid>/master   EPHEMERAL
@@ -197,18 +210,43 @@ ZkMgr::NodeStatus ZkMgr::competeMaster(bool first, char *errbuf)
   }
 }
 
+inline const char *zkTypeToString(int type)
+{
+  if (type == ZOO_CREATED_EVENT)     return "zoo_created_event";
+  if (type == ZOO_DELETED_EVENT)     return "zoo_deleted_event";
+  if (type == ZOO_CHANGED_EVENT)     return "zoo_changed_event";
+  if (type == ZOO_CHILD_EVENT)       return "zoo_child_event";
+  if (type == ZOO_SESSION_EVENT)     return "zoo_session_event";
+  if (type == ZOO_NOTWATCHING_EVENT) return "zoo_notwatching_event";
+  return 0;
+}
+
+inline const char *zkStateToString(int state)
+{
+  if (state == ZOO_EXPIRED_SESSION_STATE) return "zoo_expired_session_state";
+  if (state == ZOO_AUTH_FAILED_STATE)     return "zoo_auth_failed_state";
+  if (state == ZOO_CONNECTING_STATE)      return "zoo_connecting_state";
+  if (state == ZOO_ASSOCIATING_STATE)     return "zoo_associating_state";
+  if (state == ZOO_CONNECTED_STATE)       return "zoo_connected_state";
+  return 0;
+}
+
 void ZkMgr::watchMasterNode(zhandle_t *, int type, int state, const char *path, void *watcherCtx)
 {
   ZkMgr *mgr = (ZkMgr *) watcherCtx;
-  if (type == ZOO_DELETED_EVENT) {
+
+  if (type == ZOO_DELETED_EVENT || (type == ZOO_SESSION_EVENT && state == ZOO_EXPIRED_SESSION_STATE)) {
     pthread_mutex_lock(mgr->mutex_);
-    mgr->masterExit_ = true;
+    if (type == ZOO_DELETED_EVENT) {
+      mgr->zkStatus_ = MASTER_GONE;
+    } else {
+      mgr->zkStatus_ = SESSION_GONE;
+    }
     pthread_mutex_unlock(mgr->mutex_);
 
     pthread_cond_signal(mgr->cond_);
   } else {
-    log_error(0, "zk watch type %d, state %d, path %s", type, state, path);
-    pthread_cond_signal(mgr->cond_);
+    log_error(0, "zk watch type %d, state %d, path %s", type, state, path ? path : "null");
   }
 }
 
@@ -217,11 +255,31 @@ ZkMgr::NodeStatus ZkMgr::setWatch(char *errbuf)
   int rc = zoo_wexists(zh_, masterNode_.c_str(), watchMasterNode, this, 0);
   if (rc == ZOK) {
     return ZKOK;
+  } else if (rc == ZNONODE) {  // master had gone before set watch
+    return ZKAGAIN;
   } else {
     if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
     else log_fatal(0, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
 
     return ZKFATAL;
+  }
+}
+
+void ZkMgr::globalWatcher(zhandle_t *, int type, int state, const char *path, void *watcherCtx)
+{
+  const char *typeString  = zkTypeToString(type);
+  const char *stateString = zkStateToString(state);
+
+  if (typeString && stateString) {
+    log_info(0, "globak zookeeper type %s(%d) state %s(%d) path %s",
+             typeString, type, stateString, state, path ? path : "null");
+  } else {
+    log_info(0, "globak zookeeper type %d state %d path %s", type, state, path ? path : "null");
+  }
+
+  ZkMgr *mgr = (ZkMgr *) watcherCtx;
+  if (type == ZOO_SESSION_EVENT && state == ZOO_EXPIRED_SESSION_STATE) {
+    mgr->zkStatus_ = SESSION_GONE;
   }
 }
 
@@ -231,38 +289,44 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
   mgr->cnf_ = cnf;
   mgr->fifoFd_ = -1;
 
-  mgr->masterExit_ = false;
-  mgr->mutex_      = &PTHREAD_MUTEX;
-  mgr->cond_       = &PTHREAD_COND;
+  mgr->zkStatus_ = MASTER_GONE;
+  mgr->mutex_    = &PTHREAD_MUTEX;
+  mgr->cond_     = &PTHREAD_COND;
 
   zoo_set_debug_level(ZOO_LOG_LEVEL_ERROR);
+  zoo_set_log_stream(stderr);
 
-  mgr->zh_ = zookeeper_init(cnf->zkhost(), 0, 10, 0, mgr.get(), 0);
+  mgr->zh_ = zookeeper_init(cnf->zkhost(), globalWatcher, 15000, 0, mgr.get(), 0);
   if (!mgr->zh_) {
     snprintf(errbuf, ERRBUF_MAX, "%s zk connect %s error, %s", cnf->name(), cnf->zkhost(), strerror(errno));
     return 0;
   }
 
-//  zoo_set_log_callback(mgr->zh_, log_callback);
-
   if (!mgr->createWorkDir(errbuf)) return 0;
 
-  if (getStickFile(cnf->libdir(), cnf->name(), cnf->stick()) || cnf->tcrash()) {
-    if (cnf->zkdump()) dump_stick(cnf->id());
+  bool stick = getStickFile(cnf->libdir(), cnf->name(), cnf->stick());
+  do {
+    if (stick || cnf->tcrash()) {
+      if (cnf->zkdump()) dump_stick(cnf->id());
 
-    mgr->status_ = mgr->competeMaster(true, errbuf);
-  } else {
-    millisleep(200 + random() % 999999);
-    mgr->status_ = mgr->competeMaster(true, errbuf);
-  }
-
-  if (mgr->status_ == SLAVE) {
-    if (cnf->retryStrategy() == ConfigOpt::RETRY_NOTHING) {
-      mgr->status_ = OUT;
+      mgr->status_ = mgr->competeMaster(true, errbuf);
     } else {
-      if (mgr->setWatch(errbuf) != ZKOK) mgr->status_ = ZKFATAL;
+      millisleep(200 + random() % 999999);
+      mgr->status_ = mgr->competeMaster(true, errbuf);
     }
-  }
+
+    if (mgr->status_ == MASTER) {
+      mgr->zkStatus_ = MASTER_WAIT;
+    } else if (mgr->status_ == SLAVE) {
+      if (cnf->retryStrategy() == ConfigOpt::RETRY_NOTHING) {
+        mgr->status_ = OUT;
+      } else {
+        mgr->zkStatus_ = WORKER_SUSPEND;
+        NodeStatus status = mgr->setWatch(errbuf);
+        if (status != ZKOK) mgr->status_ = status;
+      }
+    }
+  } while (mgr->status_ == ZKAGAIN);
 
   return mgr.release();
 }
@@ -292,7 +356,7 @@ void ZkMgr::setStatus(int exitStatus)
     rc = zoo_set(zh_, statusNode_.c_str(), json.c_str(), json.size(), -1);
   }
   if (rc != ZOK) {
-    log_fatal(errno, "zoo_create/zoo_set %s error, %s", statusNode_.c_str(), zerror(rc));
+    log_fatal(0, "zoo_create/zoo_set %s error, %s", statusNode_.c_str(), zerror(rc));
   }
 }
 
@@ -578,8 +642,16 @@ int ZkMgr::exec(int argc, char *argv[])
     do {
       bool childExit = wait(pid, cnt, &retry, &exitStatus);
       rsyncFifoData();
-      if (childExit) break;
-      else millisleep(10);
+
+      if (childExit) {
+        break;
+      } else if (zkStatus_ == SESSION_GONE) {  // session expired
+        kill(pid, SIGTERM);
+        log_error(0, "zookeeper session expired, had lost master, exit");
+        break;
+      } else {
+        millisleep(10);
+      }
     } while (true);
   }
 
@@ -591,7 +663,7 @@ inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Valu
 {
   int bufferLen = RENV_BUFFER_LEN;
   int rc = zoo_get(zh, node, 0, buffer, &bufferLen, 0);
-  if (rc != ZOK) {
+  if (rc != ZOK && rc != ZNONODE) {
     log_fatal(0, "zoo_get %s error, %s", node, zerror(rc));
     return false;
   }
@@ -608,8 +680,10 @@ void ZkMgr::suspend()
   log_info(0, "%s %s suspend", cnf_->id(), cnf_->name());
 
   pthread_mutex_lock(mutex_);
-  if (!masterExit_) pthread_cond_wait(cond_, mutex_);
+  if (zkStatus_ == WORKER_SUSPEND) pthread_cond_wait(cond_, mutex_);
   pthread_mutex_unlock(mutex_);
+
+  if (zkStatus_ == SESSION_GONE) return;  // session expired
 
   log_info(0, "%s %s wake up", cnf_->id(), cnf_->name());
 
@@ -640,11 +714,17 @@ void ZkMgr::suspend()
 
   if (status_ == SLAVE) {
     log_info(0, "%s %s run", cnf_->id(), cnf_->name());
+    do {
+      status_ = competeMaster(false, 0);
+      if (status_ == MASTER) {
+        zkStatus_ = MASTER_WAIT;
+      } else if (status_ == SLAVE) {
+        zkStatus_ = WORKER_SUSPEND;
 
-    status_ = competeMaster(false, 0);
-    if (status_ == SLAVE) {
-      if (setWatch(0) != ZKOK) status_ = ZKFATAL;
-    }
+        NodeStatus stat = setWatch(0);
+        if (stat != ZKOK) status_ = stat;
+      }
+    } while (status_ == ZKAGAIN);
   }
 }
 
