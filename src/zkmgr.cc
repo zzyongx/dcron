@@ -12,7 +12,9 @@
 #include "logger.h"
 #include "zkmgr.h"
 
-#define ERRBUF_MAX 1024
+#define ERRBUF_MAX    1024
+#define ZKRETRY_MAX   100
+#define ZKRETRY_SLEEP 500  // ms
 
 extern char **environ;
 static std::string ENV_STICK;
@@ -46,13 +48,17 @@ static struct ACL_vector ZOO_DCRON_ALL_ACL = {1, _DCRON_ALL_ACL};
 
 inline bool createNodeIfNotExist(zhandle_t *zh, const char *node, char *errbuf)
 {
-  int rc = zoo_create(zh, node, 0, -1, &ZOO_DCRON_ALL_ACL, 0, 0, 0);
-  if (rc != ZOK && rc != ZNODEEXISTS) {
-    snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", node, zerror(rc));
-    return false;
-  } else {
-    return true;
+  for (int i = 0; /**/; /**/) {
+    int rc = zoo_create(zh, node, 0, -1, &ZOO_DCRON_ALL_ACL, 0, 0, 0);
+    if (rc == ZOK || rc == ZNODEEXISTS) {
+      return true;
+    } else if (rc != ZCONNECTIONLOSS) {
+      snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", node, zerror(rc));
+      return false;
+    }
+    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
   }
+  return false;
 }
 
 static bool createStickFile(const std::string &libdir, const char *name)
@@ -149,65 +155,77 @@ ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
   char buffer[1024];
   struct Stat stat;
 
-  do {
-    int bufferLen = 1024;
-    int rc = zoo_get(zh_, workersNode_.c_str(), 0, buffer, &bufferLen, &stat);
-    if (rc != ZOK) {
-      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
-      else log_fatal(0, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
+  for (int i = 0; /**/; /**/) {
+    do {
+      int bufferLen = 1024;
+      int rc = zoo_get(zh_, workersNode_.c_str(), 0, buffer, &bufferLen, &stat);
+      if (rc == ZCONNECTIONLOSS) break;
 
-      return ZKFATAL;
-    }
-
-    Json::Value array;
-    if (bufferLen <= 0) {
-      array = Json::Value(Json::arrayValue);
-    } else {
-      Json::Reader reader;
-      if (!reader.parse(buffer, buffer + bufferLen, array)) {
-        if (errbuf) snprintf(errbuf, ERRBUF_MAX, "%s content %s error", workersNode_.c_str(), buffer);
-        else log_fatal(0, "%s content %s error", workersNode_.c_str(), buffer);
+      if (rc != ZOK) {
+        if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
+        else log_fatal(0, "zoo_get %s error, %s", workersNode_.c_str(), zerror(rc));
 
         return ZKFATAL;
       }
-    }
 
-    if (!master && array.size() >= cnf_->maxRetry()) return OUT;
+      Json::Value array;
+      if (bufferLen <= 0) {
+        array = Json::Value(Json::arrayValue);
+      } else {
+        Json::Reader reader;
+        if (!reader.parse(buffer, buffer + bufferLen, array)) {
+          if (errbuf) snprintf(errbuf, ERRBUF_MAX, "%s content %s error", workersNode_.c_str(), buffer);
+          else log_fatal(0, "%s content %s error", workersNode_.c_str(), buffer);
 
-    array.append(cnf_->id());
+          return ZKFATAL;
+        }
+      }
 
-    std::string json = Json::FastWriter().write(array);
-    if (json[json.size()-1] == '\n') json.resize(json.size()-1);
+      if (!master && array.size() >= cnf_->maxRetry()) return OUT;
+      array.append(cnf_->id());
 
-    if (errbuf) printf("zoo_set workers %s %s\n", workersNode_.c_str(), json.c_str());
-    else log_info(0, "zoo_set workers %s %s", workersNode_.c_str(), json.c_str());
+      std::string json = Json::FastWriter().write(array);
+      if (json[json.size()-1] == '\n') json.resize(json.size()-1);
 
-    rc = zoo_set(zh_, workersNode_.c_str(), json.c_str(), json.size(), stat.version);
-    if (rc == ZOK) {
-      return master ? MASTER : SLAVE;
-    } else if (rc != ZBADVERSION) {
-      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
-      else log_fatal(0, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
+      if (errbuf) fprintf(stderr, "zoo_set workers %s %s\n", workersNode_.c_str(), json.c_str());
+      else log_info(0, "zoo_set workers %s %s", workersNode_.c_str(), json.c_str());
 
-      return ZKFATAL;
-    }
-  } while (true);
+      rc = zoo_set(zh_, workersNode_.c_str(), json.c_str(), json.size(), stat.version);
+      if (rc == ZOK) {
+        return master ? MASTER : SLAVE;
+      } else if (rc == ZCONNECTIONLOSS) {
+        break;
+      } else if (rc != ZBADVERSION) {
+        if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
+        else log_fatal(0, "zoo_set %s error, %s", workersNode_.c_str(), zerror(rc));
+
+        return ZKFATAL;
+      }
+    } while (true);
+
+    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
+  }
+  return ZKFATAL;
 }
 
 ZkMgr::NodeStatus ZkMgr::competeMaster(bool first, char *errbuf)
 {
-  int rc = zoo_create(zh_, masterNode_.c_str(), cnf_->id(), strlen(cnf_->id()), &ZOO_DCRON_ALL_ACL,
-                      ZOO_EPHEMERAL, 0, 0);
-  if (rc == ZOK) {
-    return first ? joinWorkers(true, errbuf) : MASTER;
-  } else if (rc == ZNODEEXISTS) {
-    return first ? joinWorkers(false, errbuf) : SLAVE;
-  } else {
-    if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
-    else log_fatal(0, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
+  for (int i = 0; /**/; /**/) {
+    int rc = zoo_create(zh_, masterNode_.c_str(), cnf_->id(), strlen(cnf_->id()), &ZOO_DCRON_ALL_ACL,
+                        ZOO_EPHEMERAL, 0, 0);
+    if (rc == ZOK) {
+      return first ? joinWorkers(true, errbuf) : MASTER;
+    } else if (rc == ZNODEEXISTS) {
+      return first ? joinWorkers(false, errbuf) : SLAVE;
+    } else if (rc != ZCONNECTIONLOSS) {
+      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
+      else log_fatal(0, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
 
-    return ZKFATAL;
+      return ZKFATAL;
+    }
+    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
   }
+  return ZKFATAL;
 }
 
 inline const char *zkTypeToString(int type)
@@ -252,17 +270,21 @@ void ZkMgr::watchMasterNode(zhandle_t *, int type, int state, const char *path, 
 
 ZkMgr::NodeStatus ZkMgr::setWatch(char *errbuf)
 {
-  int rc = zoo_wexists(zh_, masterNode_.c_str(), watchMasterNode, this, 0);
-  if (rc == ZOK) {
-    return ZKOK;
-  } else if (rc == ZNONODE) {  // master had gone before set watch
-    return ZKAGAIN;
-  } else {
-    if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
-    else log_fatal(0, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
+  for (int i = 0; /**/; /**/) {
+    int rc = zoo_wexists(zh_, masterNode_.c_str(), watchMasterNode, this, 0);
+    if (rc == ZOK) {
+      return ZKOK;
+    } else if (rc == ZNONODE) {  // master had gone before set watch
+      return ZKAGAIN;
+    } else if (rc != ZCONNECTIONLOSS) {
+      if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
+      else log_fatal(0, "zoo_wexists %s error, %s", masterNode_.c_str(), zerror(rc));
 
-    return ZKFATAL;
+      return ZKFATAL;
+    }
+    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
   }
+  return ZKFATAL;
 }
 
 void ZkMgr::globalWatcher(zhandle_t *, int type, int state, const char *path, void *watcherCtx)
@@ -283,6 +305,17 @@ void ZkMgr::globalWatcher(zhandle_t *, int type, int state, const char *path, vo
   }
 }
 
+inline zhandle_t *zookeeperInit(const char *zkhost, watcher_fn fn, void *ctx)
+{
+  for (int i = 0; /**/; /**/) {
+    zhandle_t *zh = zookeeper_init(zkhost, fn, 15000, 0, ctx, 0);
+    if (zh) return zh;
+    if (errno != ZCONNECTIONLOSS) return 0;
+    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
+  }
+  return 0;
+}
+
 ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
 {
   std::auto_ptr<ZkMgr> mgr(new ZkMgr);
@@ -296,9 +329,9 @@ ZkMgr *ZkMgr::create(ConfigOpt *cnf, char *errbuf)
   zoo_set_debug_level(ZOO_LOG_LEVEL_ERROR);
   zoo_set_log_stream(stderr);
 
-  mgr->zh_ = zookeeper_init(cnf->zkhost(), globalWatcher, 15000, 0, mgr.get(), 0);
+  mgr->zh_ = zookeeperInit(cnf->zkhost(), globalWatcher, mgr.get());
   if (!mgr->zh_) {
-    snprintf(errbuf, ERRBUF_MAX, "%s zk connect %s error, %s", cnf->name(), cnf->zkhost(), strerror(errno));
+    snprintf(errbuf, ERRBUF_MAX, "%s zk connect %s error, %s", cnf->name(), cnf->zkhost(), zerror(errno));
     return 0;
   }
 
@@ -371,9 +404,10 @@ void ZkMgr::setResult(int retry, int exitStatus, const char *error)
   std::string json = Json::FastWriter().write(obj);
   if (json[json.size()-1] == '\n') json.resize(json.size()-1);
 
+  log_info(0, "zoo_set result %s%010d %s", resultNode_.c_str(), retry, json.c_str());
   int rc = zoo_create(zh_, resultNode_.c_str(), json.c_str(), json.size(), &ZOO_DCRON_ALL_ACL, ZOO_SEQUENCE, 0, 0);
   if (rc != ZOK) {
-    log_fatal(errno, "zoo_create %s error, %s", statusNode_.c_str(), zerror(rc));
+    log_fatal(errno, "zoo_create %s error, %s", resultNode_.c_str(), zerror(rc));
   }
 }
 
@@ -559,7 +593,7 @@ bool ZkMgr::wait(pid_t pid, size_t cnt, bool *retry, int *exitStatus)
         cnf_->retryStrategy() == ConfigOpt::RETRY_ON_CRASH) {
       setStatus(*exitStatus);
     } else if (cnf_->retryStrategy() == ConfigOpt::RETRY_ON_ABEXIT) {
-      if (cnt == cnf_->maxRetry()) {
+      if (cnt+1 >= cnf_->maxRetry()) {
         setStatus(*exitStatus);
       } else {
         setResult(cnt, *exitStatus);
@@ -668,7 +702,7 @@ inline bool zooGetJson(zhandle_t *zh, const char *node, char *buffer, Json::Valu
     return false;
   }
 
-  if (bufferLen > 0) {
+  if (rc == ZOK && bufferLen > 0) {
     Json::Reader reader;
     if (!reader.parse(buffer, buffer + bufferLen, *root)) return false;
   }
@@ -745,13 +779,13 @@ bool ZkMgr::dump(std::string *json) const
 
   Json::Value array(Json::arrayValue);
   for (int i = 0; i < 10; ++i) {
-    root = Json::Value(Json::objectValue);
+    root = Json::nullValue;
 
     char result[32];
     snprintf(result, 32, "/result%010d", i);
     std::string resultPath = taskPath_ + result;
 
-    if (zooGetJson(zh_, resultPath.c_str(), buffer.get(), &root)) array.append(root);
+    if (zooGetJson(zh_, resultPath.c_str(), buffer.get(), &root) && !root.isNull()) array.append(root);
   }
   obj["result"] = array;
 

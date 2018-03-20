@@ -94,9 +94,9 @@ test_abexit()
     exit 1
   }
 
+  R0=$(cat $ZKDUMP | $JPATH 'result[0]')
   R1=$(cat $ZKDUMP | $JPATH 'result[1]')
-  R2=$(cat $ZKDUMP | $JPATH 'result[2]')
-  (test "$R1" != "" && test "$R2" == "") || {
+  (test "$R0" != "" && test "$R1" == "") || {
     echo "$LINENO result length error"
     exit 1
   }
@@ -152,13 +152,11 @@ test_crash()
   rm -f $LIBDIR/blacktest.stick
   export DCRON_RETRYON=CRASH
 
-  export DCRON_TEST_CRASH=1
   export DCRON_ID=node-a
-  $DCRON $BINDIR/dumb.sh &
+  DCRON_TEST_CRASH=1 $DCRON $BINDIR/dumb.sh &
 
-  export DCRON_TEST_CRASH=0
   export DCRON_ID=node-b
-  $DCRON $BINDIR/dumb.sh &
+  DCRON_TEST_CRASH=0 $DCRON $BINDIR/dumb.sh &
 
   wait # wait
 
