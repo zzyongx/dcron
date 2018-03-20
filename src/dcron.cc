@@ -56,22 +56,24 @@ int main(int argc, char *argv[])
 {
   if (argc == 1) {
     fprintf(stderr, "usage: %s <command>\n", argv[0]);
+    fprintf(stderr, "usage: %s <options> -- <command>\n", argv[0]);
     return EXIT_FAILURE;
   }
 
-  std::string command;
-  if (!which(argv[1], &command)) {
-    fprintf(stderr, "command %s notfound", argv[1]);
-    return EXIT_FAILURE;
-  }
-  argv[1] = (char *) command.c_str();
-
+  int envc = 1;
   char errbuf[1024];
-  ConfigOpt *cnf = ConfigOpt::create(errbuf);
+  ConfigOpt *cnf = ConfigOpt::create(argc, argv, &envc, errbuf);
   if (!cnf) {
     fprintf(stderr, "config error %s\n", errbuf);
     return EXIT_FAILURE;
   }
+
+  std::string command;
+  if (!which(argv[envc], &command)) {
+    fprintf(stderr, "command %s notfound", argv[envc]);
+    return EXIT_FAILURE;
+  }
+  argv[envc] = (char *) command.c_str();
 
   if (cnf->llap()) daemon(1, 1);
 
@@ -97,9 +99,8 @@ int main(int argc, char *argv[])
   int status;
   do {
     log_info(0, "%s %s status %s", cnf->id(), cnf->name(), ZkMgr::statusToString(zkMgr->status()));
-
     if (zkMgr->status() == ZkMgr::MASTER) {
-      status = zkMgr->exec(argc-1, argv+1);
+      status = zkMgr->exec(argc-envc, argv+envc);
       break;
     } else if (zkMgr->status() == ZkMgr::SLAVE) {
       zkMgr->suspend();

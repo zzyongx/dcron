@@ -16,56 +16,80 @@
 
 #include "configopt.h"
 
-inline bool getenv(const char *name, std::string *value)
-{
-  const char *ptr = getenv(name);
-  if (!ptr) return false;
-
-  value->assign(ptr);
-  return true;
-}
-
-inline void getenv(const char *name, std::string *value, const std::string &def)
-{
-  const char *ptr = getenv(name);
-
-  if (ptr) value->assign(ptr);
-  else value->assign(def);
-}
-
-template <class IntType>
-bool getenv(const char *name, IntType *value, IntType def)
-{
-  const char *ptr = getenv(name);
-  if (ptr) {
-    char *endptr;
-    long int intval = strtol(ptr, &endptr, 10);
-    if (*endptr != '\0') return false;
-    *value = intval;
-  } else {
-    *value = def;
-  }
-  return true;
-}
-
-inline bool getenv(const char *name, bool *b, bool def)
-{
-  const char *ptr = getenv(name);
-  if (ptr) {
-    if (strcmp(ptr, "true") == 0 || strcmp(ptr, "1") == 0) {
-      *b = true;
-    } else if (strcmp(ptr, "false") == 0 || strcmp(ptr, "0") == 0) {
-      *b = false;
-    } else {
-      return false;
+class Env {
+public:
+  Env(int argc, char *argv[]) : argv_(argv) {
+    argc_ = 0;
+    for (int i = 1; i < argc; ++i) {
+      if (strcmp(argv_[i], "--") == 0) {
+        argc_ = i;
+        break;
+      }
     }
-  } else {
-    *b = def;
   }
-  return true;
-}
 
-static bool getIpByEth(const char *eth, std::string *ip)
+  int getc() const { return argc_ + 1; }
+
+  const char *get(const char *name) {
+    for (int i = 1; i < argc_; ++i) {
+      int pos;
+      for (pos = 0; name[pos] && argv_[i][pos] && name[pos] == argv_[i][pos]; ++pos);
+      if (pos != 0 && argv_[i][pos] == '=') return argv_[i] + pos+1;
+    }
+    return getenv(name);
+  }
+
+  bool get(const char *name, std::string *value) {
+    const char *ptr = get(name);
+    if (!ptr) return false;
+
+    value->assign(ptr);
+    return true;
+  }
+
+  void get(const char *name, std::string *value, const std::string &def) {
+    const char *ptr = get(name);
+
+    if (ptr) value->assign(ptr);
+    else value->assign(def);
+  }
+
+  template <class IntType>
+  bool get(const char *name, IntType *value, IntType def) {
+    const char *ptr = get(name);
+    if (ptr) {
+      char *endptr;
+      long int intval = strtol(ptr, &endptr, 10);
+      if (*endptr != '\0') return false;
+      *value = intval;
+    } else {
+      *value = def;
+    }
+    return true;
+  }
+
+  bool get(const char *name, bool *b, bool def) {
+    const char *ptr = getenv(name);
+    if (ptr) {
+      if (strcmp(ptr, "true") == 0 || strcmp(ptr, "1") == 0) {
+        *b = true;
+      } else if (strcmp(ptr, "false") == 0 || strcmp(ptr, "0") == 0) {
+        *b = false;
+      } else {
+        return false;
+      }
+    } else {
+      *b = def;
+    }
+    return true;
+  }
+
+private:
+  int argc_;
+  char **argv_;
+};
+
+bool getIpByEth(const char *eth, std::string *ip)
 {
   struct ifreq ifr;
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -120,28 +144,30 @@ bool ConfigOpt::parseUser(const char *username, char *errbuf)
   return true;
 }
 
-ConfigOpt *ConfigOpt::create(char *errbuf)
+ConfigOpt *ConfigOpt::create(int argc, char *argv[], int *envc, char *errbuf)
 {
   std::auto_ptr<ConfigOpt> opt(new ConfigOpt);
   std::string str;
 
-  if (!getenv("DCRON_ID", &opt->id_) && !getIpByEth("eth0", &opt->id_)) {
+  Env env(argc, argv);
+
+  if (!env.get("DCRON_ID", &opt->id_) && !getIpByEth("eth0", &opt->id_)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_ID get default eth0 ip failed, %s", strerror(errno));
     return 0;
   }
 
-  if (!getenv("DCRON_ZK", &opt->zkhost_)) {
+  if (!env.get("DCRON_ZK", &opt->zkhost_)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_ZK is required");
     return 0;
   }
 
-  if (!getenv("DCRON_MAXRETRY", &opt->maxRetry_, 2)) {
+  if (!env.get("DCRON_MAXRETRY", &opt->maxRetry_, 2)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_MAXRETRY is not a number");
     return 0;
   }
   if (opt->maxRetry_ > 5) opt->maxRetry_ = 5;
 
-  getenv("DCRON_RETRYON", &str, "CRASH");
+  env.get("DCRON_RETRYON", &str, "CRASH");
   if (str == "CRASH") {
     opt->retryStrategy_ = RETRY_ON_CRASH;
   } else if (str == "ABEXIT") {
@@ -150,23 +176,23 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
     opt->retryStrategy_ = RETRY_NOTHING;
   }
 
-  if (!getenv("DCRON_LLAP", &opt->llap_, false)) {
+  if (!env.get("DCRON_LLAP", &opt->llap_, false)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_LLAP is not a boolean");
     return 0;
   }
 
-  if (!getenv("DCRON_STICK", &opt->stick_, opt->llap_ ? 90 : 0)) {
+  if (!env.get("DCRON_STICK", &opt->stick_, opt->llap_ ? 90 : 0)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_STICK is not a number");
     return 0;
   }
 
-  if (!getenv("DCRON_STDIOCAP", &opt->captureStdio_, !opt->llap_)) {
+  if (!env.get("DCRON_STDIOCAP", &opt->captureStdio_, !opt->llap_)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_STDIOCAP is not a boolean");
     return 0;
   }
 
-  getenv("DCRON_LIBDIR", &opt->libdir_, "/var/lib/dcron");
-  getenv("DCRON_LOGDIR", &opt->logdir_, "/var/log/dcron");
+  env.get("DCRON_LIBDIR", &opt->libdir_, "/var/lib/dcron");
+  env.get("DCRON_LOGDIR", &opt->logdir_, "/var/log/dcron");
 
   struct stat st;
   if (stat(opt->libdir_.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -179,15 +205,15 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   }
 
   std::string user;
-  getenv("DCRON_USER", &user);
+  env.get("DCRON_USER", &user);
   if (!user.empty() && !opt->parseUser(user.c_str(), errbuf)) return 0;
 
-  if (!getenv("DCRON_RLIMIT_AS", &opt->rlimitAs_, 0)) {
+  if (!env.get("DCRON_RLIMIT_AS", &opt->rlimitAs_, 0)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_RLIMIT_AS is not a number");
     return 0;
   }
 
-  if (!getenv("DCRON_NAME", &str)) {
+  if (!env.get("DCRON_NAME", &str)) {
     snprintf(errbuf, ERRBUF_MAX, "ENV DCRON_NAME is required");
     return 0;
   }
@@ -214,13 +240,14 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   if (opt->llap_) opt->retryStrategy_ = RETRY_ON_CRASH;
 
   /* DEBUG conf */
-  getenv("DCRON_ZKDUMP", &opt->zkdump_);
-  getenv("DCRON_TEST_CRASH", &opt->tcrash_, false);
+  env.get("DCRON_ZKDUMP", &opt->zkdump_);
+  env.get("DCRON_TEST_CRASH", &opt->tcrash_, false);
 
-  getenv("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_SUCCESS",
+  env.get("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_SUCCESS",
     &opt->testConnectionLossWhenCompeteMasterSuccess_, false);
-  getenv("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_FAILURE",
+  env.get("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_FAILURE",
     &opt->testConnectionLossWhenCompeteMasterFailure_, false);
 
+  *envc = env.getc();
   return opt.release();
 }

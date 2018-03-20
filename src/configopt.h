@@ -6,7 +6,7 @@
 class ConfigOpt {
 public:
   enum RetryStrategy { RETRY_ON_CRASH, RETRY_ON_ABEXIT, RETRY_NOTHING };
-  static ConfigOpt *create(char *errbuf);
+  static ConfigOpt *create(int argc, char *argv[], int *envc, char *errbuf);
 
   const char *id() const { return id_.c_str(); }
   const char *name() const { return name_.c_str(); }
