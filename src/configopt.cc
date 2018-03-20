@@ -217,5 +217,10 @@ ConfigOpt *ConfigOpt::create(char *errbuf)
   getenv("DCRON_ZKDUMP", &opt->zkdump_);
   getenv("DCRON_TEST_CRASH", &opt->tcrash_, false);
 
+  getenv("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_SUCCESS",
+    &opt->testConnectionLossWhenCompeteMasterSuccess_, false);
+  getenv("DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_FAILURE",
+    &opt->testConnectionLossWhenCompeteMasterFailure_, false);
+
   return opt.release();
 }

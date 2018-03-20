@@ -12,9 +12,12 @@
 #include "logger.h"
 #include "zkmgr.h"
 
-#define ERRBUF_MAX    1024
-#define ZKRETRY_MAX   100
-#define ZKRETRY_SLEEP 500  // ms
+#define ERRBUF_MAX      1024
+#define ZKRETRY_MAX     100
+#define ZKRETRY_SLEEP   500  // ms
+#define RENV_ITEM_MAX   5
+#define RENV_BUFFER_LEN PIPE_BUF * 6
+
 
 extern char **environ;
 static std::string ENV_STICK;
@@ -210,21 +213,47 @@ ZkMgr::NodeStatus ZkMgr::joinWorkers(bool master, char *errbuf)
 
 ZkMgr::NodeStatus ZkMgr::competeMaster(bool first, char *errbuf)
 {
-  for (int i = 0; /**/; /**/) {
-    int rc = zoo_create(zh_, masterNode_.c_str(), cnf_->id(), strlen(cnf_->id()), &ZOO_DCRON_ALL_ACL,
-                        ZOO_EPHEMERAL, 0, 0);
+  do {
+    int rc;
+    if (cnf_->testConnectionLossWhenCompeteMasterFailure()) {
+      rc = ZCONNECTIONLOSS;
+    } else {
+      rc = zoo_create(zh_, masterNode_.c_str(), cnf_->id(), strlen(cnf_->id()), &ZOO_DCRON_ALL_ACL,
+                      ZOO_EPHEMERAL, 0, 0);
+      if (cnf_->testConnectionLossWhenCompeteMasterSuccess()) rc = ZCONNECTIONLOSS;
+    }
+
     if (rc == ZOK) {
       return first ? joinWorkers(true, errbuf) : MASTER;
     } else if (rc == ZNODEEXISTS) {
       return first ? joinWorkers(false, errbuf) : SLAVE;
-    } else if (rc != ZCONNECTIONLOSS) {
+    } else if (rc == ZCONNECTIONLOSS) {
+      int bufferLen = RENV_BUFFER_LEN;
+      std::auto_ptr<char> buffer(new char[RENV_BUFFER_LEN]);
+
+      for (int i = 0; /**/; /**/) {
+        rc = zoo_get(zh_, masterNode_.c_str(), 0, buffer.get(), &bufferLen, 0);
+        if (rc == ZOK) {
+          if (strncmp(buffer.get(), cnf_->id(), bufferLen) == 0) return first ? joinWorkers(true, errbuf) : MASTER;
+          else return first ? joinWorkers(false, errbuf) : SLAVE;
+        } else if (rc == ZNONODE) {
+          break;
+        } else if (rc != ZCONNECTIONLOSS) {
+          if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_get %s error, %s", masterNode_.c_str(), zerror(rc));
+          else log_fatal(0, "zoo_get %s error, %s", masterNode_.c_str(), zerror(rc));
+
+          return ZKFATAL;
+        }
+        if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
+      }
+    } else {
       if (errbuf) snprintf(errbuf, ERRBUF_MAX, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
       else log_fatal(0, "zoo_create %s error, %s", masterNode_.c_str(), zerror(rc));
 
       return ZKFATAL;
     }
-    if (++i < ZKRETRY_MAX) millisleep(ZKRETRY_SLEEP);
-  }
+  } while (true);
+
   return ZKFATAL;
 }
 
@@ -435,8 +464,6 @@ inline char * const *buildEnv(ConfigOpt *cnf, const std::map<std::string, std::s
   return envp;
 }
 
-#define RENV_ITEM_MAX   5
-#define RENV_BUFFER_LEN PIPE_BUF * 6
 static bool getRomoteEnv(zhandle_t *zh, const char *path, std::map<std::string, std::string> *env)
 {
   int bufferLen = RENV_BUFFER_LEN;

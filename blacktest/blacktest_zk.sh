@@ -60,6 +60,30 @@ test_start_when_zk_down()
   }
 }
 
+test_zconnectionloss_when_compete_master_success()
+{
+  rm -f $ZKDUMP
+  DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_SUCCESS=true $DCRON $BINDIR/dumb.sh exit0
+
+  STATUS=$(cat $ZKDUMP 2>/dev/null | $JPATH 'status.status')
+  test "$STATUS" = 0 || {
+    echo "$LINENO status error $STATUS"
+    exit 1
+  }
+}
+
+test_zconnectionloss_when_compete_master_failure()
+{
+  rm -f $ZKDUMP
+  DCRON_TEST_CONNECTIONLOSS_WHEN_COMPETE_MASTER_FAILURE=true $DCRON $BINDIR/dumb.sh exit0
+
+  STATUS=$(cat $ZKDUMP 2>/dev/null | $JPATH 'status.status')
+  test "$STATUS" = 0 || {
+    echo "$LINENO status error $STATUS"
+    exit 1
+  }
+}
+
 test "$TESTCASE" != "" && {
   $TESTCASE
   exit 0
@@ -71,3 +95,13 @@ sleep 2
 
 echo "TEST ZCONNECTIONLOSS"
 test_start_when_zk_down
+sleep 2
+
+echo "TEST ZCONNECTIONLOSS WHEN COMPETE MASTER SUCCESS"
+test_zconnectionloss_when_compete_master_success
+sleep 2
+
+echo "TEST ZCONNECTIONLOSS WHEN COMPETE MASTER FAILURE"
+test_zconnectionloss_when_compete_master_failure
+
+echo "OK"

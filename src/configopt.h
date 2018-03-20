@@ -32,6 +32,18 @@ public:
 
   int rlimitAs() const { return rlimitAs_; }
 
+  bool testConnectionLossWhenCompeteMasterSuccess() {
+    bool r = testConnectionLossWhenCompeteMasterSuccess_;
+    testConnectionLossWhenCompeteMasterSuccess_ = false;
+    return r;
+  }
+
+  bool testConnectionLossWhenCompeteMasterFailure() {
+    bool r = testConnectionLossWhenCompeteMasterFailure_;
+    testConnectionLossWhenCompeteMasterFailure_ = false;
+    return r;
+  }
+
 private:
   ConfigOpt() {}
   bool parseUser(const char *user, char *errbuf);
@@ -57,6 +69,8 @@ private:
 
   std::string zkdump_;
   bool tcrash_;
+  bool testConnectionLossWhenCompeteMasterSuccess_;
+  bool testConnectionLossWhenCompeteMasterFailure_;
 
   int rlimitAs_;
 };
