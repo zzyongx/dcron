@@ -25,15 +25,86 @@ DCRON_ZK=zk1:2181,zk2:2181,zk3:2181/dcron
 
 和dbbackup略有不同，mysql2kafka是daemon进程，不是定时任务。
 
+** 注意
+在cron中 ~%~ 是特殊字符，所以需要转义。
+
 ** 幂等性
-dcron的语义是至少一次，取决于zookeeper的稳定性和任务的特点。例如：在dbbackup运行期间，zookeeper不可用，执行dbbackup的zookeeper session过期了，dcron会kill掉dbbackup，由其它机器重启dbbackup任务。
+dcron的语义是最多一次，最少一次，最好N次，取决于zookeeper的稳定性和任务的配置。例如：在dbbackup运行期间，zookeeper不可用，执行dbbackup的zookeeper session过期了，dcron会kill掉dbbackup，由其它机器重启dbbackup任务。
 
 因为任务，尤其是llap任务可能在任意机器执行，如果需要跨机器保留状态，dcron提供了简单的机制。dcron提供了环境变量 =DCRON_FIFO= ，它的值是fifo文件，把 ~KEY=VALUE~ 形式的数据写入fifo文件，dcron会把它同步到zookeeper，当任务在其它机器启动时，任务可以通过环境变量 ~DCRON_KEY~ 的形式获取之前保存的数据。这种方式保存数据有个缺点，只能有5个key，每个key的value不能超过4k。如果要保留的数据很多，可以通过dcron保留数据的索引，在MySQL或其它存储中存储数据的值。
+
+注意：dcron提供的存储机制，每500ms同步一次，如果fifo写入太多，写入会阻塞。最好定期写入fifo。
 
 * 编译安装
 - 普通安装 =make get-deps && make && make install=
 - 打包成rpm =make get-deps && ./scripts/makerpm=
 
 * 配置参数
+** 参数汇总
+| 参数名称        | 是否必须 | 默认值                  | 参数说明                                                                               |
+|-----------------+----------+-------------------------+----------------------------------------------------------------------------------------|
+| DCRON_ZK        | 是       |                         | ZK的地址，建议不要配置到ZK的/上                                                        |
+| DCRON_NAME      | 是       |                         | 任务的标识，包含任务名称和任务ID                                                       |
+| DCRON_ID        | 否       | eth0的IP                | dcron节点ID，用于区分不同节点                                                          |
+| DCRON_MAXRETRY  | 否       | 2                       | 运行dcron的节点数                                                                      |
+| DCRON_RETRYON   | 否       | ""                      | 用于配置何时重试                                                                       |
+| DCRON_LLAP      | 否       | false                   | 用于启动LLAP任务                                                                       |
+| DCRON_STICK     | 否       | llap任务90，其它0       | 当配置了DCRON_STICK时，优先在上一次运行任务的节点运行。值是超时时间，单位秒。          |
+| DCRON_STDIOCAP  | 否       | llap任务false，其它true | 是否捕获IO，如果为true，在DCRON_LOGDIR目录有两个日志文件，注意：没有输出，则不会有文件 |
+| DCRON_LIBDIR    | 否       | /var/lib/dcron          | 存放stick文件，fifo文件的目录                                                          |
+| DCRON_LOGDIR    | 否       | /var/log/dcron          | 存放日志                                                                               |
+| DCRON_USER      | 否       | 和cron用户相同          | 当cron以root用户启动时，可以切换成非root用户                                           |
+| DCRON_RLIMIT_AS | 否       | ""                      | 限制任务使用的内存                                                                     |
+
+** 参数传递方式
+dcron会从环境变量和命令行参数中读取参数，用 ~--~ 表示dcron参数结束。下面两个写法是等价的，但是第二种写法一个文件只能有一个cron。
+
+#+BEGIN_EXAMPLE
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+DCRON_ZK=zk1:2181,zk2:2181,zk3:2181/dcron
+
+0 4 * * * root dcron DCRON_NAME=dbbackup.\%F_\%H\%M -- dbbackup
+#+END_EXAMPLE
+
+#+BEGIN_EXAMPLE
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+DCRON_ZK=zk1:2181,zk2:2181,zk3:2181/dcron
+DCRON_NAME=dbbackup.\%F_\%H\%M-
+
+0 4 * * * root dcron dbbackup
+#+END_EXAMPLE
+
+** 重点参数说明
+*** DCRON_NAME
+~DCRON_NAME~ 有两部分组成，例如 ~dbbackup.%F~ 这里dbbackup是任务名称， ~%F~ 是任务的实例ID，是任务的一次执行。一个任务的多次执行，可以通过fifo共享数据。dcron会把任务ID ~%F~ 格式化成时间，所以必须是合法的时间格式，具体可以参考 =man date= 。
+
+*** DCRON_RETRYON
+默认是空，不重试，dcron仅保证任务在某台机器启动，而不管运行结果，尤其是任务运行中机器崩溃的情况。可以修改参数提高任务成功的可能。
+- CRASH 崩溃时重试，此时在其它节点重试。
+- ABEXIT 任务异常退出时重试，此时在本节点重试。
+
+例如：dbbackup，如果配置 =ABEXIT= ，则dbbackup执行失败时（exit code != 0）重试。如果没有重试足够的次数时，节点崩溃，则换一个节点继续重试。
+如果配置 =CRASH= ，则dbbackup执行失败时，不重试，如果dbbackup执行过程中，节点崩溃，则换一个节点重新启动。
+
+对比三种重试策略
+| 策略   | 执行次数                   | 说明                                                               |
+|--------+----------------------------+--------------------------------------------------------------------|
+| ""     | 最多执行一次               | 可能在任务执行的任何时候退出                                       |
+| CRASH  | 至少执行一次               | 如果任务执行时，执行节点挂了，任务没有执行完，会切换到其它节点执行 |
+| ABEXIT | 最少执行 DCRON_MAXRETRY 次 | 如果任务执行时，异常退出或执行节点挂了，会切换到其它节点执行       |
+
+注意：llap忽略这个参数，一旦llap任务退出，总是启动新的任务，如果配置了stick，优先在本机启动。
+
+*** DCRON_LLAP
+llap任务自身必须可以前台运行，由dcron把它变成deamon进程。因为dcron必须是llap进程的父进程，如果llap进程不是前台运行，dcron无法成为它的父进程。
+另外llap进程最好配置成每分钟运行，当llap的任务的备选node不足时，加入新的。
+
+* 最佳实践
+** 幂等性
+任务最好是幂等的，保证任务重复执行没有副作用。可以借助任务的本地状态（并定期把本地状态同步到fifo），实现幂等。
+例如：mysql2kafka，可以一次读取1万行mysql更新，把这1万行更新写入kafka，同时把mysql更新的offset写入fifo。如果重启任务，可以读取全局状态获取offset，从这个offset开始执行。这个方案也不完美，如果写入kafka之后，fifo中的数据没有来得及同步到zookeeper，kafka中还是存在重复数据。
+
+** 小任务
+dcron执行的任务最好很小，避免单个任务就把单个节点的资源耗尽。把大任务拆成小任务，小任务可以分布到多台机器上执行。
 
 * zookeeper调优
