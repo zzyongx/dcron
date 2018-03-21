@@ -1,3 +1,39 @@
-只需要一个zookeeper，dcron 就可以把cron变成分布式的。虽然dcron通过cron驱动运行，但是它并不依附于cron。
+* 简介
+dcron是一个分布式的任务执行系统，利用zookeeper做协调器，依赖cron调度。优点是非常简单，无依赖，核心代码不足1000行。
 
-*
+** 定时任务
+考虑一个场景， 每天4点使用 =dbbackup= 备份数据库，此时可以配置一个cron =0 4 * * * root dbbackup= 。这个方案有个小问题，如果cron部署在一台机器A上，那么A恰好宕机了，那么cron就不会执行。如果部署在两台机器A，B上，则A，B都会运行。dcron的解决方案是，仍然使用cron，但是用dcron运行。
+
+#+BEGIN_EXAMPLE
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+DCRON_ZK=zk1:2181,zk2:2181,zk3:2181/dcron
+
+0 4 * * * root dcron DCRON_NAME=dbbackup.\%F_\%H\%M -- dbbackup
+#+END_EXAMPLE
+
+这和标准cron基本一样，每天4点运行 =dbbackup= 。如果该cron仅部署在一台机器A上，和标准cron一样。如果部署在多台机器上，那么仅有一台机器执行。
+
+** Long Live and Process(llap) 任务
+考虑另一个场景，把mysql的更新实时同步到kafka中，假设mysql2kafka是做这个工作的。这里需要mysql2kafka仅有一个实例运行，但是这个实例必须运行。如果部署在一台机器上，有单点问题，如果部署到多台机器，则有多个实例运行了。看看dcron的解决方案。
+
+#+BEGIN_EXAMPLE
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+DCRON_ZK=zk1:2181,zk2:2181,zk3:2181/dcron
+
+* * * * * root dcron DCRON_NAME=mysql2kafka.\%F_\%H\%M DCRON_LLAP=true -- mysql2kafka
+#+END_EXAMPLE
+
+和dbbackup略有不同，mysql2kafka是daemon进程，不是定时任务。
+
+** 幂等性
+dcron的语义是至少一次，取决于zookeeper的稳定性和任务的特点。例如：在dbbackup运行期间，zookeeper不可用，执行dbbackup的zookeeper session过期了，dcron会kill掉dbbackup，由其它机器重启dbbackup任务。
+
+因为任务，尤其是llap任务可能在任意机器执行，如果需要跨机器保留状态，dcron提供了简单的机制。dcron提供了环境变量 =DCRON_FIFO= ，它的值是fifo文件，把 ~KEY=VALUE~ 形式的数据写入fifo文件，dcron会把它同步到zookeeper，当任务在其它机器启动时，任务可以通过环境变量 ~DCRON_KEY~ 的形式获取之前保存的数据。这种方式保存数据有个缺点，只能有5个key，每个key的value不能超过4k。如果要保留的数据很多，可以通过dcron保留数据的索引，在MySQL或其它存储中存储数据的值。
+
+* 编译安装
+- 普通安装 =make get-deps && make && make install=
+- 打包成rpm =make get-deps && ./scripts/makerpm=
+
+* 配置参数
+
+* zookeeper调优
